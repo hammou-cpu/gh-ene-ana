@@ -1,0 +1,109 @@
+# ghost_energy_full.py (ENGLISH VERSION)
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from datetime import timedelta
+
+# Configure Streamlit page
+st.set_page_config(page_title="Ghost Energy Analyzer", layout="wide")
+st.title("🔌 Ghost Energy Analyzer – Detect Hidden Electricity Usage")
+
+# Sidebar: Upload file and define cost
+st.sidebar.header("📥 Upload Data and Settings")
+uploaded_file = st.sidebar.file_uploader("Upload a CSV file with 'timestamp' and 'power_kW' columns", type="csv")
+currency = st.sidebar.selectbox("Select currency", ["USD", "DZD"])
+rate = st.sidebar.number_input("Electricity cost per kWh", min_value=0.0, value=0.1 if currency == "USD" else 15.0)
+
+def calc_cost(kwh):
+    return kwh * rate
+
+if uploaded_file:
+    # Load and clean data
+    df = pd.read_csv(uploaded_file, parse_dates=["timestamp"])
+    df.set_index("timestamp", inplace=True)
+    df = df.asfreq('H').fillna(method='ffill')
+    df['day'] = df.index.date
+    df['hour'] = df.index.hour
+    st.subheader("📄 Data Preview")
+    st.dataframe(df.head())
+
+    # General statistics
+    avg = df['power_kW'].mean()
+    mx = df['power_kW'].max()
+    mn = df['power_kW'].min()
+    total_kwh = df['power_kW'].sum()
+    total_cost = calc_cost(total_kwh)
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Average Power (kW)", f"{avg:.3f}")
+    col2.metric("Max Power (kW)", f"{mx:.3f}")
+    col3.metric("Min Power (kW)", f"{mn:.3f}")
+    col4.metric(f"Total Energy (kWh)", f"{total_kwh:.2f} ({total_cost:.2f} {currency})")
+
+    # Idle consumption detection
+    st.subheader("💤 Idle Consumption – Standby")
+    idle_thresh = st.slider("Idle Threshold (kW)", 0.01, 0.2, 0.05)
+    idle_df = df[df['power_kW'] < idle_thresh]
+    idle_ratio = len(idle_df) / len(df) * 100
+    idle_kwh = idle_df['power_kW'].sum()
+    idle_cost = calc_cost(idle_kwh)
+    st.write(f"👁️ Idle Time: **{idle_ratio:.2f}%**")
+    st.write(f"🔋 Idle Energy: **{idle_kwh:.2f} kWh**, Approx. Cost: **{idle_cost:.2f} {currency}**")
+
+    # Hourly consumption chart
+    st.subheader("🕒 Hourly Consumption Pattern")
+    hourly = df.groupby('hour')['power_kW'].mean()
+    fig, ax = plt.subplots()
+    sns.lineplot(x=hourly.index, y=hourly.values, ax=ax)
+    ax.set_xlabel("Hour")
+    ax.set_ylabel("Average Power (kW)")
+    st.pyplot(fig)
+
+    # Monthly analysis
+    st.subheader("📅 Monthly Analysis")
+    monthly = df['power_kW'].resample('M').sum()
+    monthly_cost = monthly.apply(calc_cost)
+    df_month = pd.DataFrame({'Usage_kWh': monthly, f'Cost_{currency}': monthly_cost})
+    st.dataframe(df_month)
+
+    fig2, ax2 = plt.subplots(figsize=(6, 4))
+    df_month.plot(kind='bar', y='Usage_kWh', ax=ax2, legend=False)
+    ax2.set_ylabel("Energy (kWh)")
+    st.pyplot(fig2)
+
+    # Forecasting using SARIMAX
+    if len(monthly) >= 12:
+        st.subheader("⏱️ Forecast for Next 3 Months")
+        model = SARIMAX(monthly, order=(1, 1, 1), seasonal_order=(1, 1, 0, 12))
+        res = model.fit(disp=False)
+        forecast = res.get_forecast(steps=3)
+        idx = pd.date_range(monthly.index[-1] + timedelta(days=1), periods=3, freq='M')
+        pred = pd.Series(forecast.predicted_mean, index=idx)
+        pred_cost = pred.apply(calc_cost)
+        df_forecast = pd.DataFrame({f'Usage_kWh': pred, f'Cost_{currency}': pred_cost})
+        st.dataframe(df_forecast)
+
+        fig3, ax3 = plt.subplots(figsize=(6, 4))
+        monthly.plot(ax=ax3, label="Historical")
+        pred.plot(ax=ax3, style='--', label="Forecast")
+        ax3.legend()
+        st.pyplot(fig3)
+
+    # Energy saving recommendations
+    st.subheader("🔧 Energy Saving Tips")
+    recs = []
+    if idle_ratio > 20:
+        recs.append("🔌 Reduce idle time by unplugging devices or using smart power strips.")
+    if total_cost > rate * 100:
+        recs.append("💡 Consider replacing inefficient devices or using power-saving modes.")
+    if total_kwh / monthly.count() > avg * 1.2:
+        recs.append("📈 Investigate appliances that may be consuming excessive energy.")
+
+    for r in recs:
+        st.write("- " + r)
+
+else:
+    st.info("⏳ Please upload a CSV file to start the analysis.")
